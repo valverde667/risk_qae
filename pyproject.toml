@@ -16,9 +16,17 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+quantum = [
+  "qiskit>=1.0",
+  "qiskit-algorithms>=0.3.0",
+]
+# Backwards-compatible alias
 qiskit = [
   "qiskit>=1.0",
   "qiskit-algorithms>=0.3.0",
+]
+aer = [
+  "qiskit-aer>=0.13.0",
 ]
 dev = [
   "pytest>=7.0",

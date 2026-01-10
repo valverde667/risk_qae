@@ -206,7 +206,9 @@ def estimate_tvar(
     tail_prob_ae = runner.run(tail_prob_spec, budget=step_budget, backend=bh)
     tail_prob = float(tail_prob_ae.estimate)
 
-    tail_comp_spec = build_tail_scaled_component_problem(dist, k)
+    tail_comp_spec = build_tail_scaled_component_problem(
+        dist, k, value_encoding=cfg.value_encoding
+    )
     tail_comp_ae = runner.run(tail_comp_spec, budget=step_budget, backend=bh)
     tail_scaled_component = float(tail_comp_ae.estimate)
 
@@ -288,7 +290,7 @@ def estimate_risk_measures(
     )
 
     runner = BudgetedAERunner()
-    mean_problem = build_mean_problem(dist)
+    mean_problem = build_mean_problem(dist, value_encoding=cfg.value_encoding)
     mean_ae = runner.run(mean_problem, budget=mean_cfg.budget, backend=bh)
     mean_res = MeanResult(
         mean=float(mean_ae.estimate),

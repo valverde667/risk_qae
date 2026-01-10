@@ -12,6 +12,7 @@ from .value_encoding import (
     build_scaled_value_rotation,
     build_scaled_value_rotation_piecewise_prefix,
 )
+from ..config import ValueEncodingConfig
 
 
 def _require_qiskit() -> None:
@@ -24,7 +25,11 @@ def _require_qiskit() -> None:
         ) from exc
 
 
-def build_mean_problem(dist: DiscretizedDistribution) -> EstimationProblemSpec:
+def build_mean_problem(
+    dist: DiscretizedDistribution,
+    *,
+    value_encoding: ValueEncodingConfig | None = None,
+) -> EstimationProblemSpec:
     """Build an estimation problem for E[X] using value encoding.
 
     The objective probability is:
@@ -37,12 +42,22 @@ def build_mean_problem(dist: DiscretizedDistribution) -> EstimationProblemSpec:
     from qiskit.circuit import QuantumCircuit
 
     A = build_state_preparation(dist.pmf)
-    V = build_scaled_value_rotation_piecewise_prefix(
-        dist.n_index_qubits,
-        dist.bin_values,
-        dist.bounds,
-        n_segments=16,
-    )
+    ve = value_encoding or ValueEncodingConfig()
+
+    if ve.method == "piecewise_prefix":
+        V = build_scaled_value_rotation_piecewise_prefix(
+            dist.n_index_qubits,
+            dist.bin_values,
+            dist.bounds,
+            n_segments=ve.n_segments,
+        )
+    else:
+        V = build_scaled_value_rotation(
+            dist.n_index_qubits,
+            dist.bin_values,
+            dist.bounds,
+            method=ve.method,
+        )
 
     n = dist.n_index_qubits
     qc = QuantumCircuit(n + 1, name="mean_problem")
@@ -107,7 +122,10 @@ def build_tail_prob_problem(
 
 
 def build_tail_scaled_component_problem(
-    dist: DiscretizedDistribution, k: int
+    dist: DiscretizedDistribution,
+    k: int,
+    *,
+    value_encoding: ValueEncodingConfig | None = None,
 ) -> EstimationProblemSpec:
     """Build an estimation problem for E[g(X) * 1_{I >= k}].
 
@@ -128,12 +146,22 @@ def build_tail_scaled_component_problem(
     vals = np.array(dist.bin_values, dtype=float)
     vals[:k] = float(x_min)
 
-    V = build_scaled_value_rotation_piecewise_prefix(
-        n,
-        vals,
-        dist.bounds,
-        n_segments=16,
-    )
+    ve = value_encoding or ValueEncodingConfig()
+
+    if ve.method == "piecewise_prefix":
+        V = build_scaled_value_rotation_piecewise_prefix(
+            n,
+            vals,
+            dist.bounds,
+            n_segments=ve.n_segments,
+        )
+    else:
+        V = build_scaled_value_rotation(
+            n,
+            vals,
+            dist.bounds,
+            method=ve.method,
+        )
 
     qc = QuantumCircuit(n + 1, name=f"tail_scaled_component_{k}")
     qc.compose(A.circuit, qubits=qc.qubits[:n], inplace=True)

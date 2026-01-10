@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -68,6 +68,12 @@ class DiagnosticsConfig:
     return_runtime_breakdown: bool = True
 
 
+@dataclass
+class ValueEncodingConfig:
+    method: str = "piecewise_prefix"  # or "table"
+    n_segments: int = 16  # must be power of two
+
+
 @dataclass(frozen=True)
 class RiskQAEConfig:
     """Top-level configuration container."""
@@ -78,4 +84,5 @@ class RiskQAEConfig:
     budget: BudgetConfig = BudgetConfig()
     var_search: VaRSearchConfig = VaRSearchConfig()
     backend: BackendConfig = BackendConfig()
+    value_encoding: ValueEncodingConfig = field(default_factory=ValueEncodingConfig)
     diagnostics: DiagnosticsConfig = DiagnosticsConfig()

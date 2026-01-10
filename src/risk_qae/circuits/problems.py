@@ -8,7 +8,10 @@ from ..discretization.histogram import DiscretizedDistribution
 from ..types import EstimationProblemSpec
 from .indicator import build_indicator_geq_index, build_indicator_leq_index
 from .stateprep import build_state_preparation
-from .value_encoding import build_scaled_value_rotation
+from .value_encoding import (
+    build_scaled_value_rotation,
+    build_scaled_value_rotation_piecewise_prefix,
+)
 
 
 def _require_qiskit() -> None:
@@ -34,7 +37,12 @@ def build_mean_problem(dist: DiscretizedDistribution) -> EstimationProblemSpec:
     from qiskit.circuit import QuantumCircuit
 
     A = build_state_preparation(dist.pmf)
-    V = build_scaled_value_rotation(dist.n_index_qubits, dist.bin_values, dist.bounds)
+    V = build_scaled_value_rotation_piecewise_prefix(
+        dist.n_index_qubits,
+        dist.bin_values,
+        dist.bounds,
+        n_segments=16,
+    )
 
     n = dist.n_index_qubits
     qc = QuantumCircuit(n + 1, name="mean_problem")
@@ -120,7 +128,12 @@ def build_tail_scaled_component_problem(
     vals = np.array(dist.bin_values, dtype=float)
     vals[:k] = float(x_min)
 
-    V = build_scaled_value_rotation(n, vals, dist.bounds)
+    V = build_scaled_value_rotation_piecewise_prefix(
+        n,
+        vals,
+        dist.bounds,
+        n_segments=16,
+    )
 
     qc = QuantumCircuit(n + 1, name=f"tail_scaled_component_{k}")
     qc.compose(A.circuit, qubits=qc.qubits[:n], inplace=True)

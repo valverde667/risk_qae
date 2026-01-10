@@ -2,12 +2,28 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
+from qiskit import transpile
 
 import math
 
 from ..config import BudgetConfig
 from ..types import BackendHandle, EstimationProblemSpec
 from .results import AEResult
+
+
+def _compile_for_backend(qc, backend_handle, opt_level: int = 1):
+    # Decompose high-level instructions like StatePreparation
+    qc2 = qc.decompose(reps=10)
+
+    # If the BackendHandle has an AerSimulator (or other target), transpile to it
+    target = getattr(backend_handle, "backend", None)
+    if target is not None:
+        return transpile(qc2, backend=target, optimization_level=opt_level)
+
+    # Fallback: generic basis
+    return transpile(
+        qc2, basis_gates=["rz", "sx", "x", "cx"], optimization_level=opt_level
+    )
 
 
 def _require_quantum_runtime() -> None:
@@ -112,12 +128,14 @@ class BudgetedAERunner:
         ones = 0
         shots_used = 0
 
+        qc_compiled = _compile_for_backend(qc, backend)
+
         while shots_remaining > 0:
             if calls >= max_calls:
                 break
             s = min(per_call, shots_remaining)
 
-            job = backend.sampler.run([qc], shots=int(s))
+            job = backend.sampler.run([qc_compiled], shots=int(s))
             pub_result = job.result()[0]
             counts = _get_counts(pub_result)
 

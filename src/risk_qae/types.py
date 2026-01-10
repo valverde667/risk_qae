@@ -63,6 +63,7 @@ class BackendHandle:
     estimator: Any | None = None
     backend: Any | None = None
     metadata: Mapping[str, Any] = None  # type: ignore[assignment]
+    provider: str | None = None
 
 
 class SupportsBuildBackend(Protocol):

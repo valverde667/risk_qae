@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
+import hashlib
+
 from qiskit import transpile
 
 import math
@@ -37,6 +39,47 @@ def _require_quantum_runtime() -> None:
         ) from exc
 
 
+def _stable_circuit_text(qc) -> str:
+    """Best-effort stable textual form for caching."""
+    try:
+        from qiskit.qasm3 import dumps  # type: ignore
+
+        return dumps(qc)
+    except Exception:
+        # Fallback: QASM2 (may be unavailable in some future qiskit versions)
+        try:
+            return qc.qasm()
+        except Exception:
+            # Last resort: repr (not ideal but avoids crashing)
+            return repr(qc)
+
+
+def _compile_for_backend(
+    qc, backend_handle, *, decompose_reps: int = 3, opt_level: int = 0
+):
+    # Decompose high-level instructions (StatePreparation, etc.)
+    qc2 = qc.decompose(reps=decompose_reps)
+
+    target = getattr(backend_handle, "backend", None)
+    if target is not None:
+        return transpile(qc2, backend=target, optimization_level=opt_level)
+
+    return transpile(
+        qc2, basis_gates=["rz", "sx", "x", "cx"], optimization_level=opt_level
+    )
+
+
+def _compile_cache_key(
+    qc, backend_handle, *, decompose_reps: int, opt_level: int
+) -> str:
+    txt = _stable_circuit_text(qc)
+    backend_id = str(type(getattr(backend_handle, "backend", None)).__name__)
+    payload = f"{backend_id}|reps={decompose_reps}|opt={opt_level}|{txt}".encode(
+        "utf-8"
+    )
+    return hashlib.sha256(payload).hexdigest()
+
+
 @dataclass
 class BudgetedAERunner:
     """Shots-first amplitude estimation runner (Stage 3 will implement).
@@ -49,6 +92,10 @@ class BudgetedAERunner:
       - consumes BudgetConfig.total_shots with per-call shot caps
       - executes using primitives in BackendHandle (Sampler/Estimator)
     """
+
+    decompose_reps: int = 3
+    transpile_optimization_level: int = 0
+    _compile_cache: dict[str, Any] = field(default_factory=dict)
 
     def run(
         self,
@@ -128,7 +175,23 @@ class BudgetedAERunner:
         ones = 0
         shots_used = 0
 
-        qc_compiled = _compile_for_backend(qc, backend)
+        # compile once + cache
+        key = _compile_cache_key(
+            qc,
+            backend,
+            decompose_reps=self.decompose_reps,
+            opt_level=self.transpile_optimization_level,
+        )
+
+        qc_compiled = self._compile_cache.get(key)
+        if qc_compiled is None:
+            qc_compiled = _compile_for_backend(
+                qc,
+                backend,
+                decompose_reps=self.decompose_reps,
+                opt_level=self.transpile_optimization_level,
+            )
+            self._compile_cache[key] = qc_compiled
 
         while shots_remaining > 0:
             if calls >= max_calls:

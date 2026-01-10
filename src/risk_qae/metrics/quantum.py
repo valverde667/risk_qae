@@ -74,7 +74,7 @@ def estimate_mean(
     bh = backend or get_backend(cfg.backend)
 
     runner = BudgetedAERunner()
-    problem = build_mean_problem(dist)
+    problem = build_mean_problem(dist, value_encoding=cfg.value_encoding)
     res = runner.run(problem, budget=cfg.budget, backend=bh)
 
     return MeanResult(

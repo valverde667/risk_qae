@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Sequence
 
 
 @dataclass(frozen=True)
@@ -21,11 +22,25 @@ class BoundsConfig:
     epsilon: float = 1e-12
 
 
+from typing import Sequence  # add near top (or just use tuple[...] below)
+
+
 @dataclass(frozen=True)
 class AEConfig:
-    """Amplitude estimation algorithm selection."""
+    """Amplitude estimation algorithm selection.
+
+    method:
+      - "budgeted_fixed_schedule" (current v0.1): direct sampling (BudgetedAERunner)
+      - "grover_mle": Grover schedule + MLE fit (GroverMLEAERunner)
+    """
 
     method: str = "budgeted_fixed_schedule"  # v0.1 default
+
+    # Grover-MLE options (used only when method == "grover_mle")
+    grover_mle_grid_size: int = 2000
+    grover_powers: tuple[int, ...] | None = (
+        None  # e.g. (0,1,2,4); None => auto schedule
+    )
 
 
 @dataclass(frozen=True)

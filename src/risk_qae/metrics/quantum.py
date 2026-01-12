@@ -6,6 +6,7 @@ from typing import Any
 import numpy as np
 
 from ..ae.budgeted_ae import BudgetedAERunner
+from ..ae.grover_mle import GroverMLEAERunner
 from ..backends.factory import get_backend
 from ..config import RiskQAEConfig
 from ..discretization.histogram import HistogramDiscretizer
@@ -381,3 +382,16 @@ def _freeze_config(cfg: RiskQAEConfig) -> dict[str, Any]:
         "backend": cfg.backend.__dict__,
         "diagnostics": cfg.diagnostics.__dict__,
     }
+
+
+def _get_ae_runner(cfg: RiskQAEConfig):
+    if cfg.ae.method == "budgeted_fixed_schedule":
+        return BudgetedAERunner()
+
+    if cfg.ae.method == "grover_mle":
+        return GroverMLEAERunner(
+            grid_size=int(cfg.ae.grover_mle_grid_size),
+            powers=cfg.ae.grover_powers,
+        )
+
+    raise ValueError(f"Unknown AE method: {cfg.ae.method}")

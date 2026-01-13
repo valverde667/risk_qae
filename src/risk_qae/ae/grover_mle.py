@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Sequence
 
 import numpy as np
+from statistics import NormalDist
 
 from ..config import BudgetConfig
 from ..types import BackendHandle, EstimationProblemSpec
@@ -90,33 +91,79 @@ def _mle_theta_grid(
     data: list[tuple[int, int, int]],
     *,
     grid_size: int = 2000,
+    alpha_confidence: float = 0.05,
 ) -> tuple[float, tuple[float, float]]:
     """
-    MLE estimate of theta over a grid on [0, pi/2], plus a crude CI from a
-    log-likelihood drop (Wilks approx).
+    MLE fit for theta in a = sin^2(theta), theta in [0, pi/2].
 
-    Returns: (theta_hat, (theta_lo, theta_hi))
+    Each experiment is (k, ones, shots) where the measured probability is:
+        p_k(theta) = sin^2((2k+1) * theta)
+
+    Returns:
+        theta_hat, (theta_lo, theta_hi) where (lo,hi) is an approximate
+        (1 - alpha_confidence) confidence interval via a Wilks likelihood-ratio cutoff.
     """
-    # Grid in theta (not amplitude). theta in [0, pi/2].
-    thetas = np.linspace(0.0, 0.5 * math.pi, int(grid_size), dtype=float)
-    lls = np.array(
-        [_log_likelihood_theta(float(th), data) for th in thetas], dtype=float
-    )
+    import numpy as np
+    from statistics import NormalDist
 
-    j = int(np.argmax(lls))
-    theta_hat = float(thetas[j])
-    ll_max = float(lls[j])
+    if len(data) == 0:
+        raise ValueError("MLE data must be non-empty.")
 
-    # Wilks: 2*(ll_max - ll(theta)) ~ chi2_1. Use ~3.84 for 95% CI.
-    # This is an approximation; good enough for diagnostics in v0.1.
-    cutoff = ll_max - 0.5 * 3.84
+    # Theta grid on [0, pi/2]
+    thetas = np.linspace(0.0, 0.5 * np.pi, int(grid_size), dtype=float)
+
+    # Accumulate log-likelihood on the grid
+    lls = np.zeros_like(thetas)
+    eps = 1e-12
+
+    for k, ones, shots in data:
+        k = int(k)
+        ones = int(ones)
+        shots = int(shots)
+        if shots <= 0:
+            continue
+        if ones < 0 or ones > shots:
+            raise ValueError("Invalid (ones, shots) pair in MLE data.")
+
+        angle = (2.0 * k + 1.0) * thetas
+        p = np.sin(angle) ** 2
+        p = np.clip(p, eps, 1.0 - eps)
+
+        # Binomial log-likelihood up to an additive constant:
+        # ones*log(p) + (shots-ones)*log(1-p)
+        lls += ones * np.log(p) + (shots - ones) * np.log(1.0 - p)
+
+    # MLE
+    idx = int(np.argmax(lls))
+    theta_hat = float(thetas[idx])
+    ll_max = float(lls[idx])  # <-- THIS fixes your NameError
+
+    # Wilks: 2*(ll_max - ll(theta)) ~ chi2_1.
+    # For df=1, chi2 quantile can be computed from Normal quantile:
+    # chi2_q = [Phi^{-1}((p+1)/2)]^2 where p = 1 - alpha_confidence.
+    p_cov = 1.0 - float(alpha_confidence)
+    p_cov = min(max(p_cov, 1e-12), 1.0 - 1e-12)
+    z = NormalDist().inv_cdf((p_cov + 1.0) / 2.0)
+    chi2_q = float(z * z)
+
+    cutoff = ll_max - 0.5 * chi2_q
+
+    # CI as the connected region around the MLE where ll >= cutoff
     mask = lls >= cutoff
     if not np.any(mask):
+        # Fallback: degenerate interval at the MLE
         return theta_hat, (theta_hat, theta_hat)
 
-    idx = np.where(mask)[0]
-    theta_lo = float(thetas[int(idx[0])])
-    theta_hi = float(thetas[int(idx[-1])])
+    # To avoid picking disjoint lobes, take the contiguous segment containing the MLE index
+    left = idx
+    while left > 0 and mask[left - 1]:
+        left -= 1
+    right = idx
+    while right < (len(mask) - 1) and mask[right + 1]:
+        right += 1
+
+    theta_lo = float(thetas[left])
+    theta_hi = float(thetas[right])
     return theta_hat, (theta_lo, theta_hi)
 
 
@@ -143,6 +190,8 @@ class GroverMLEAERunner:
         *,
         budget: BudgetConfig,
         backend: BackendHandle,
+        epsilon_target: float | None = None,
+        alpha_confidence: float = 0.05,
     ) -> AEResult:
         _require_quantum_runtime()
         if backend.sampler is None:
@@ -178,9 +227,7 @@ class GroverMLEAERunner:
             raise ValueError("BudgetConfig.max_circuit_calls must be >= 1.")
 
         if self.powers is None:
-            # Simple doubling schedule starting at k=0.
-            # We'll cap the length by available calls.
-            # Example: 0,1,2,4,8,...
+            # Simple doubling schedule starting at k=0: 0,1,2,4,8,...
             powers: list[int] = [0]
             k = 1
             while len(powers) < max_calls:
@@ -202,6 +249,10 @@ class GroverMLEAERunner:
 
         diagnostics: dict[str, Any] = {"powers": [], "per_power": []}
 
+        # We will keep the most recent estimate/CI so we can return it.
+        estimate: float | None = None
+        ci: tuple[float, float] | None = None
+
         for k in powers:
             if shots_remaining <= 0 or calls >= max_calls:
                 break
@@ -210,12 +261,8 @@ class GroverMLEAERunner:
             if s <= 0:
                 break
 
-            # Build circuit: start with A|0>, then apply Q^k (Q already includes A and A† internally),
-            # but the standard Grover AE circuit is Q^k applied after A:
-            #   |psi_k> = (Q)^k A |0>
-            #
-            # We can implement this as:
-            #   qc = A; then append Q k times.
+            # Circuit for this power:
+            #   |psi_k> = Q^k A |0>
             qc = QuantumCircuit(A.num_qubits, name=f"grover_k_{k}")
             qc.compose(A, inplace=True)
             for _ in range(int(k)):
@@ -227,8 +274,17 @@ class GroverMLEAERunner:
             pub_result = job.result()[0]
             counts = _get_counts(pub_result)
             ones = int(counts.get("1", 0))
+
+            # Record observation
             data.append((int(k), ones, int(s)))
 
+            # Update counters immediately so diagnostics reflect this experiment
+            shots_used += int(s)
+            shots_remaining -= int(s)
+            calls += 1
+            circuits_run += 1
+
+            # Append per-power diagnostics now (so they exist even if we early-stop)
             diagnostics["powers"].append(int(k))
             diagnostics["per_power"].append(
                 {
@@ -239,33 +295,43 @@ class GroverMLEAERunner:
                 }
             )
 
-            shots_used += int(s)
-            shots_remaining -= int(s)
-            calls += 1
-            circuits_run += 1
-
-        if len(data) == 0:
-            raise RuntimeError(
-                "No Grover experiments were executed (budget/calls too small)."
+            # Refit MLE on accumulated data
+            theta_hat, (theta_lo, theta_hi) = _mle_theta_grid(
+                data,
+                grid_size=self.grid_size,
+                alpha_confidence=alpha_confidence,
             )
 
-        theta_hat, (theta_lo, theta_hi) = _mle_theta_grid(
-            data, grid_size=self.grid_size
-        )
+            a_hat = float(math.sin(theta_hat) ** 2)
+            a_lo = float(math.sin(theta_lo) ** 2)
+            a_hi = float(math.sin(theta_hi) ** 2)
 
-        # Convert to amplitude a = sin^2(theta)
-        a_hat = float(math.sin(theta_hat) ** 2)
-        a_lo = float(math.sin(theta_lo) ** 2)
-        a_hi = float(math.sin(theta_hi) ** 2)
+            estimate = a_hat
+            ci = (a_lo, a_hi)
+            if problem.post_processing is not None:
+                estimate = float(problem.post_processing(a_hat))
+                ci = (
+                    float(problem.post_processing(a_lo)),
+                    float(problem.post_processing(a_hi)),
+                )
 
-        # Post-processing (e.g., map E[g(X)] -> E[X])
-        estimate = a_hat
-        ci = (a_lo, a_hi)
-        if problem.post_processing is not None:
-            estimate = float(problem.post_processing(a_hat))
-            ci = (
-                float(problem.post_processing(a_lo)),
-                float(problem.post_processing(a_hi)),
+            # Optional early stop
+            half_width = 0.5 * abs(ci[1] - ci[0])
+            if epsilon_target is not None and half_width <= float(epsilon_target):
+                diagnostics["early_stop"] = {
+                    "reason": "epsilon_target_met",
+                    "epsilon_target": float(epsilon_target),
+                    "half_width": float(half_width),
+                    "alpha_confidence": float(alpha_confidence),
+                    "shots_used": int(shots_used),
+                    "circuits_run": int(circuits_run),
+                    "calls": int(calls),
+                }
+                break
+
+        if len(data) == 0 or estimate is None or ci is None:
+            raise RuntimeError(
+                "No Grover experiments were executed (budget/calls too small)."
             )
 
         return AEResult(

@@ -20,7 +20,7 @@ def _require_qiskit() -> None:
 def build_state_preparation(
     pmf: Sequence[float],
     *,
-    method: str = "initialize",
+    method: str = "state_preparation",
 ) -> CircuitArtifact:
     """Build the state-preparation operator A for a discrete PMF.
 
@@ -32,7 +32,8 @@ def build_state_preparation(
     pmf:
         Probabilities over N=2**n computational basis states.
     method:
-        - "initialize": uses qiskit.circuit.library.Initialize on amplitude vector sqrt(pmf)
+        - "state_preparation": uses qiskit.circuit.library.StatePreparation on amplitude vector sqrt(pmf)
+          (unitary/invertible; required for Grover-based AE)
 
     Returns
     -------
@@ -42,12 +43,12 @@ def build_state_preparation(
 
     Notes
     -----
-    This is a *v1* implementation optimized for correctness and simplicity.
-    For larger n, structured loaders (qROM / iterative rotations) should be added.
+    For Grover-based amplitude estimation, A must be unitary so A.inverse() exists.
+    Qiskit's Initialize can include reset operations (non-unitary) and is not invertible.
     """
     _require_qiskit()
     from qiskit.circuit import QuantumCircuit
-    from qiskit.circuit.library import Initialize
+    from qiskit.circuit.library import StatePreparation
 
     p = np.asarray(pmf, dtype=float)
     if p.ndim != 1:
@@ -65,14 +66,11 @@ def build_state_preparation(
         raise ValueError("pmf length must be a power of two (N = 2**n_index_qubits).")
 
     qc = QuantumCircuit(n, name="A_stateprep")
-    init = Initialize(amps)
-    qc.append(init, qc.qubits)
+    prep = StatePreparation(amps)
+    qc.append(prep, qc.qubits)
 
-    # Qiskit's Initialize includes a reset; removing it makes composition cleaner in AE circuits.
-    try:
-        qc = qc.decompose(reps=1)
-    except Exception:
-        pass
+    # Aer can't assemble opaque "state_preparation" instructions; decompose to basis gates.
+    qc = qc.decompose(reps=10)
 
     return CircuitArtifact(
         circuit=qc,

@@ -74,10 +74,15 @@ def estimate_mean(
     dist = _discretize(data, cfg)
     bh = backend or get_backend(cfg.backend)
 
-    runner = BudgetedAERunner()
+    runner = _get_ae_runner(cfg)
     problem = build_mean_problem(dist, value_encoding=cfg.value_encoding)
-    res = runner.run(problem, budget=cfg.budget, backend=bh)
-
+    res = runner.run(
+        problem,
+        budget=cfg.budget,
+        backend=bh,
+        epsilon_target=cfg.ae.epsilon_target,
+        alpha_confidence=cfg.ae.alpha_confidence,
+    )
     return MeanResult(
         mean=float(res.estimate),
         mean_ci=res.ci,
@@ -115,7 +120,8 @@ def estimate_var(
     max_iters = int(cfg.var_search.max_iters)
     shots_per_step = max(1, var_budget_shots // max(1, max_iters))
 
-    runner = BudgetedAERunner()
+    runner = _get_ae_runner(cfg)
+
     n = dist.pmf.size
 
     lo = 0
@@ -137,7 +143,13 @@ def estimate_var(
             seed=b.seed,
         )
         prob_spec = build_cdf_problem(dist, mid)
-        ae = runner.run(prob_spec, budget=step_budget, backend=bh)
+        ae = runner.run(
+            prob_spec,
+            budget=step_budget,
+            backend=bh,
+            epsilon_target=cfg.ae.epsilon_target,
+            alpha_confidence=cfg.ae.alpha_confidence,
+        )
         cdf_est = float(ae.estimate)
 
         shots_used += int(ae.shots_used)
@@ -201,16 +213,28 @@ def estimate_tvar(
         max_circuit_calls=int(b.max_circuit_calls),
         seed=b.seed,
     )
-    runner = BudgetedAERunner()
+    runner = _get_ae_runner(cfg)
 
     tail_prob_spec = build_tail_prob_problem(dist, k)
-    tail_prob_ae = runner.run(tail_prob_spec, budget=step_budget, backend=bh)
+    tail_prob_ae = runner.run(
+        tail_prob_spec,
+        budget=step_budget,
+        backend=bh,
+        epsilon_target=cfg.ae.epsilon_target,
+        alpha_confidence=cfg.ae.alpha_confidence,
+    )
     tail_prob = float(tail_prob_ae.estimate)
 
     tail_comp_spec = build_tail_scaled_component_problem(
         dist, k, value_encoding=cfg.value_encoding
     )
-    tail_comp_ae = runner.run(tail_comp_spec, budget=step_budget, backend=bh)
+    tail_comp_ae = runner.run(
+        tail_comp_spec,
+        budget=step_budget,
+        backend=bh,
+        epsilon_target=cfg.ae.epsilon_target,
+        alpha_confidence=cfg.ae.alpha_confidence,
+    )
     tail_scaled_component = float(tail_comp_ae.estimate)
 
     x_min, x_max = dist.bounds
@@ -287,12 +311,19 @@ def estimate_risk_measures(
         ),
         var_search=cfg.var_search,
         backend=cfg.backend,
+        value_encoding=cfg.value_encoding,
         diagnostics=cfg.diagnostics,
     )
 
-    runner = BudgetedAERunner()
+    runner = _get_ae_runner(mean_cfg)
     mean_problem = build_mean_problem(dist, value_encoding=cfg.value_encoding)
-    mean_ae = runner.run(mean_problem, budget=mean_cfg.budget, backend=bh)
+    mean_ae = runner.run(
+        mean_problem,
+        budget=mean_cfg.budget,
+        backend=bh,
+        epsilon_target=mean_cfg.ae.epsilon_target,
+        alpha_confidence=mean_cfg.ae.alpha_confidence,
+    )
     mean_res = MeanResult(
         mean=float(mean_ae.estimate),
         mean_ci=mean_ae.ci,
@@ -319,6 +350,7 @@ def estimate_risk_measures(
             ),
             var_search=cfg.var_search,
             backend=cfg.backend,
+            value_encoding=cfg.value_encoding,
             diagnostics=cfg.diagnostics,
         )
 

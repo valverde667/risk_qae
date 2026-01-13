@@ -34,13 +34,17 @@ class AEConfig:
       - "grover_mle": Grover schedule + MLE fit (GroverMLEAERunner)
     """
 
-    method: str = "budgeted_fixed_schedule"  # v0.1 default
+    method: str = "budgeted_fixed_schedule"  # or "grover_mle"
+
+    # Optional target controls (Phase 5.2)
+    epsilon_target: float | None = (
+        None  # stop early when CI half-width <= epsilon_target
+    )
+    alpha_confidence: float = 0.05  # failure probability (0.05 => ~95% confidence)
 
     # Grover-MLE options (used only when method == "grover_mle")
     grover_mle_grid_size: int = 2000
-    grover_powers: tuple[int, ...] | None = (
-        None  # e.g. (0,1,2,4); None => auto schedule
-    )
+    grover_powers: tuple[int, ...] | None = None
 
 
 @dataclass(frozen=True)

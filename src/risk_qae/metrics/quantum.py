@@ -139,7 +139,7 @@ def estimate_var(
             total_shots=shots_per_step,
             shots_per_call=min(per_call, shots_per_step),
             allocation=b.allocation,
-            max_circuit_calls=max_calls,
+            max_circuit_calls=min(max_calls, 5),
             seed=b.seed,
         )
         prob_spec = build_cdf_problem(dist, mid)
@@ -155,7 +155,13 @@ def estimate_var(
         shots_used += int(ae.shots_used)
         circuits_run += int(ae.circuits_run)
         trace.append(
-            {"k": mid, "cdf_est": cdf_est, "ci": ae.ci, "shots": ae.shots_used}
+            {
+                "k": mid,
+                "cdf_est": cdf_est,
+                "ci": ae.ci,
+                "shots": ae.shots_used,
+                "ae_diag": dict(ae.diagnostics or {}),
+            }
         )
 
         if cdf_est >= alpha:
@@ -266,6 +272,10 @@ def estimate_tvar(
         diagnostics={
             "tail_prob_raw": dict(tail_prob_ae.diagnostics or {}),
             "tail_component_raw": dict(tail_comp_ae.diagnostics or {}),
+            "tail_prob_early_stop": (tail_prob_ae.diagnostics or {}).get("early_stop"),
+            "tail_component_early_stop": (tail_comp_ae.diagnostics or {}).get(
+                "early_stop"
+            ),
             "var": dict(vr.diagnostics or {}),
         },
     )
@@ -360,9 +370,15 @@ def estimate_risk_measures(
         var_res[float(a)] = vr
         tvar_res[float(a)] = tr
 
-    total_shots_used = mean_res.shots_used + sum(v.shots_used for v in var_res.values())
-    total_circuits = mean_res.circuits_run + sum(
-        v.circuits_run for v in var_res.values()
+    total_shots_used = (
+        mean_res.shots_used
+        + sum(v.shots_used for v in var_res.values())
+        + sum(t.shots_used for t in tvar_res.values())
+    )
+    total_circuits = (
+        mean_res.circuits_run
+        + sum(v.circuits_run for v in var_res.values())
+        + sum(t.circuits_run for t in tvar_res.values())
     )
 
     return RiskMeasuresResult(

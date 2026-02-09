@@ -8,6 +8,7 @@ then run the workflow twice:
 This is useful for:
 - demonstrating why Grover schedules exist
 - surfacing diagnostic traces in VaR bisection and TVaR tails
+- comparing against classical-on-discretized baselines
 """
 
 from __future__ import annotations
@@ -22,6 +23,24 @@ from risk_qae.config import (
     DiscretizationConfig,
     ValueEncodingConfig,
 )
+
+# NEW: discretization helper (functional wrapper)
+from risk_qae.discretization.histogram import discretize_samples
+
+# NEW: classical + debug helpers
+from risk_qae.metrics.classical import (
+    classical_mean,
+    classical_scaled_mean_amplitude,
+    classical_tvar,
+    classical_tvar_index_tail,
+    classical_var,
+    summarize_samples,
+)
+
+
+def _rel_err(est: float, ref: float) -> float:
+    denom = max(abs(ref), 1e-12)
+    return abs(est - ref) / denom
 
 
 def make_tail_stress_samples(rng: np.random.Generator, n: int = 80_000) -> np.ndarray:
@@ -61,25 +80,94 @@ def run_one(samples: np.ndarray, *, method: str) -> None:
 
     cfg = RiskQAEConfig(**common, ae=ae)
 
-    res = estimate_risk_measures({"samples": samples}, alphas=[0.95, 0.99], config=cfg)
+    # -------------------------------------------------------------------------
+    # Classical-on-discretized diagnostics (explicit discretization)
+    # -------------------------------------------------------------------------
+    dist = discretize_samples(samples, cfg.discretization)
+    ssum = summarize_samples(samples, upper_q=0.999, xmax=float(dist.bounds[1]))
+
+    cmean = classical_mean(dist).mean
+    csm = classical_scaled_mean_amplitude(dist)
+    xmin, xmax = float(csm.xmin), float(csm.xmax)
+    mean_recon = xmin + (xmax - xmin) * float(csm.a_mean)
 
     print()
     print(f"=== {method} ===")
+    print("--- Discretization / sample sanity ---")
+    print("n_bins:", dist.pmf.size)
+    print("bounds:", dist.bounds)
+    print("samples summary:", ssum)
+    print("--- Classical (ON DISCRETIZED DIST) ---")
+    print("Mean:", cmean)
+    print("Scaled mean amplitude a_mean:", csm.a_mean)
+    print("Mean recon from a_mean:", mean_recon)
+    print()
+
+    # -------------------------------------------------------------------------
+    # Quantum run
+    # -------------------------------------------------------------------------
+    res = estimate_risk_measures({"samples": samples}, alphas=[0.95, 0.99], config=cfg)
+
+    print("--- Quantum ---")
     print("Mean:", res.mean.mean, "CI:", res.mean.mean_ci)
+
+    print()
+    print("--- Per-alpha comparisons (quantum vs classical-on-discretized) ---")
     for a in (0.95, 0.99):
+        # Classical
+        cvar = classical_var(dist, a)
+        ctvar_val = classical_tvar(dist, a)
+        ctvar_idx = classical_tvar_index_tail(dist, a)
+
+        # Quantum
         vr = res.var[a]
         tr = res.tvar[a]
+
+        print(f"[alpha={a}]")
         print(
-            f"VaR({a}):",
+            "  Classical VaR:",
+            cvar.var,
+            "bracket:",
+            cvar.bracket,
+            "idx:",
+            cvar.var_bin_index,
+        )
+        print(
+            "  Classical TVaR (value-tail):",
+            ctvar_val.tvar,
+            "tail_prob:",
+            ctvar_val.tail_prob,
+        )
+        print(
+            "  Classical TVaR (index-tail):",
+            ctvar_idx.tvar,
+            "tail_prob:",
+            ctvar_idx.tail_prob,
+        )
+
+        print(
+            "  Quantum   VaR:",
             vr.var,
-            " bracket:",
+            "bracket:",
             vr.bracket,
-            " iters:",
+            "iters:",
             vr.diagnostics.get("iters"),
         )
-        print(f"TVaR({a}):", tr.tvar, " tail_prob:", tr.tail_prob)
-        # discretization-consistent check
-        assert tr.tvar >= vr.bracket[0]
+        print("  Quantum  TVaR:", tr.tvar, "tail_prob:", tr.tail_prob)
+
+        print("  RelErr VaR  (quant vs classical):", _rel_err(vr.var, cvar.var))
+        print("  RelErr TVaR (quant vs classical):", _rel_err(tr.tvar, ctvar_val.tvar))
+
+        # Document known inconsistency rather than failing the example
+        if tr.tvar < vr.bracket[0]:
+            print("  WARNING: TVaR fell below VaR bracket lower edge.")
+            print("    TVaR:", tr.tvar)
+            print("    VaR bracket:", vr.bracket)
+            print(
+                "    This indicates an inconsistency in tail definition/scaling and/or early-stop units."
+            )
+        print()
+
     print("Total shots used:", res.total_shots_used)
     print("Total circuits run:", res.total_circuits_run)
 

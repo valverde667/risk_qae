@@ -5,7 +5,8 @@ For now it contains:
 - a minimal CLI skeleton
 - a data loading placeholder (CSV)
 - standard pre-flight checks
-- a consistent reporting + JSON export block
+- consistent reporting + JSON export block
+- classical-on-discretized baselines for quick validation
 """
 
 from __future__ import annotations
@@ -24,6 +25,22 @@ from risk_qae.config import (
     DiscretizationConfig,
     ValueEncodingConfig,
 )
+
+# NEW: explicit discretization + classical references
+from risk_qae.discretization.histogram import discretize_samples
+from risk_qae.metrics.classical import (
+    classical_mean,
+    classical_scaled_mean_amplitude,
+    classical_tvar,
+    classical_tvar_index_tail,
+    classical_var,
+    summarize_samples,
+)
+
+
+def _rel_err(est: float, ref: float) -> float:
+    denom = max(abs(ref), 1e-12)
+    return abs(est - ref) / denom
 
 
 def load_losses_csv(path: Path, column: str) -> np.ndarray:
@@ -87,21 +104,131 @@ def main() -> None:
         ),
     )
 
-    res = estimate_risk_measures({"samples": samples}, alphas=[0.95, 0.99], config=cfg)
+    alphas = (0.95, 0.99)
+
+    # -------------------------------------------------------------------------
+    # Classical-on-discretized diagnostics (explicit discretization)
+    # -------------------------------------------------------------------------
+    dist = discretize_samples(samples, cfg.discretization)
+    ssum = summarize_samples(samples, upper_q=0.999, xmax=float(dist.bounds[1]))
+
+    cmean = classical_mean(dist).mean
+    csm = classical_scaled_mean_amplitude(dist)
+    xmin, xmax = float(csm.xmin), float(csm.xmax)
+    mean_recon = xmin + (xmax - xmin) * float(csm.a_mean)
+
+    classical_per_alpha = {}
+    for a in alphas:
+        cvar = classical_var(dist, a)
+        ctvar_val = classical_tvar(dist, a)
+        ctvar_idx = classical_tvar_index_tail(dist, a)
+        classical_per_alpha[a] = {
+            "var": cvar,
+            "tvar_value_tail": ctvar_val,
+            "tvar_index_tail": ctvar_idx,
+        }
+
+    # -------------------------------------------------------------------------
+    # Quantum run
+    # -------------------------------------------------------------------------
+    res = estimate_risk_measures({"samples": samples}, alphas=list(alphas), config=cfg)
 
     # --- report ---
     print("=== Example 03: Real dataset template ===")
     # print("path:", str(path))
     print("n_samples:", int(samples.size))
+    print()
+
+    print("=== Discretization / sample sanity ===")
+    print("n_bins:", int(dist.pmf.size))
+    print("bounds:", dist.bounds)
+    print("samples summary:", ssum)
+    print()
+
+    print("=== Classical (ON DISCRETIZED DIST) ===")
+    print("Mean:", cmean)
+    print("Scaled mean amplitude a_mean:", csm.a_mean)
+    print("Mean recon from a_mean:", mean_recon)
+    for a in alphas:
+        cvar = classical_per_alpha[a]["var"]
+        ctvar_val = classical_per_alpha[a]["tvar_value_tail"]
+        ctvar_idx = classical_per_alpha[a]["tvar_index_tail"]
+        print(
+            f"VaR({a}):",
+            cvar.var,
+            " bracket:",
+            cvar.bracket,
+            " idx:",
+            cvar.var_bin_index,
+        )
+        print(
+            f"TVaR({a}) value-tail:", ctvar_val.tvar, " tail_prob:", ctvar_val.tail_prob
+        )
+        print(
+            f"TVaR({a}) index-tail:", ctvar_idx.tvar, " tail_prob:", ctvar_idx.tail_prob
+        )
+    print()
+
+    print("=== Quantum ===")
     print("Mean:", res.mean.mean, "CI:", res.mean.mean_ci)
-    for a in (0.95, 0.99):
+    for a in alphas:
         print(f"VaR({a}):", res.var[a].var, " bracket:", res.var[a].bracket)
         print(f"TVaR({a}):", res.tvar[a].tvar)
+        if res.tvar[a].tvar < res.var[a].bracket[0]:
+            print("  WARNING: TVaR fell below VaR bracket lower edge.")
+            print("    TVaR:", res.tvar[a].tvar)
+            print("    VaR bracket:", res.var[a].bracket)
+            print(
+                "    This indicates an inconsistency in tail definition/scaling and/or early-stop units."
+            )
+    print()
+
+    print("=== Relative error vs classical-on-discretized ===")
+    print("mean rel_err:", _rel_err(res.mean.mean, cmean))
+    for a in alphas:
+        cvar = classical_per_alpha[a]["var"].var
+        ctvar = classical_per_alpha[a]["tvar_value_tail"].tvar
+        print(f"var({a})  rel_err:", _rel_err(res.var[a].var, cvar))
+        print(f"tvar({a}) rel_err:", _rel_err(res.tvar[a].tvar, ctvar))
+    print()
 
     # --- export (handy for sharing / regression tests) ---
     out = {
         # "path": str(path),
         "n_samples": int(samples.size),
+        "diagnostics": {
+            "discretization": {
+                "n_bins": int(dist.pmf.size),
+                "bounds": tuple(map(float, dist.bounds)),
+            },
+            "samples_summary": {
+                "mean_raw": ssum.mean_raw,
+                "mean_winsor": ssum.mean_winsor,
+                "winsor_bounds": tuple(map(float, ssum.winsor_bounds)),
+                "mass_above_xmax": (
+                    None
+                    if ssum.mass_above_xmax is None
+                    else float(ssum.mass_above_xmax)
+                ),
+            },
+            "classical_on_discretized": {
+                "mean": cmean,
+                "a_mean": float(csm.a_mean),
+                "mean_recon_from_a_mean": float(mean_recon),
+                "per_alpha": {
+                    str(a): {
+                        "var": classical_per_alpha[a]["var"].__dict__,
+                        "tvar_value_tail": classical_per_alpha[a][
+                            "tvar_value_tail"
+                        ].__dict__,
+                        "tvar_index_tail": classical_per_alpha[a][
+                            "tvar_index_tail"
+                        ].__dict__,
+                    }
+                    for a in alphas
+                },
+            },
+        },
         "result": {
             "mean": {
                 "mean": res.mean.mean,

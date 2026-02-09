@@ -41,7 +41,9 @@ class HistogramDiscretizer:
 
             n = int(np.log2(pmf.size))
             if 2**n != pmf.size:
-                raise ValueError("pmf length must be a power of 2 for index-register mapping")
+                raise ValueError(
+                    "pmf length must be a power of 2 for index-register mapping"
+                )
 
             x_min = float(np.min(bin_values))
             x_max = float(np.max(bin_values))
@@ -98,3 +100,33 @@ class HistogramDiscretizer:
             scale_shift=x_min,
             scale_factor=1.0 / denom,
         )
+
+
+# =============================================================================
+# Convenience helpers (scripts/tests)
+# =============================================================================
+
+
+def discretize_loss_data(
+    data: LossData,
+    dcfg: DiscretizationConfig = DiscretizationConfig(),
+    bcfg: BoundsConfig = BoundsConfig(),
+) -> DiscretizedDistribution:
+    """
+    Thin functional wrapper around HistogramDiscretizer.fit for convenience in
+    scripts/tests where you want to explicitly compute the discretized PMF.
+    """
+    return HistogramDiscretizer().fit(data=data, dcfg=dcfg, bcfg=bcfg)
+
+
+def discretize_samples(
+    samples: np.ndarray,
+    dcfg: DiscretizationConfig = DiscretizationConfig(),
+    bcfg: BoundsConfig = BoundsConfig(),
+) -> DiscretizedDistribution:
+    """
+    Convenience helper for the common case: discretize raw samples to a
+    DiscretizedDistribution using HistogramDiscretizer with percentile clipping.
+    """
+    samples = np.asarray(samples, dtype=float)
+    return discretize_loss_data({"samples": samples}, dcfg=dcfg, bcfg=bcfg)

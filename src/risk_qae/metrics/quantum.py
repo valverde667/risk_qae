@@ -142,6 +142,7 @@ def estimate_var(
             max_circuit_calls=min(max_calls, 5),
             seed=b.seed,
         )
+
         prob_spec = build_cdf_problem(dist, mid)
         ae = runner.run(
             prob_spec,
@@ -164,10 +165,35 @@ def estimate_var(
             }
         )
 
-        if cdf_est >= alpha:
-            hi = mid
+        # ------------------------------------------------------------------
+        # CI-aware bisection decision (conservative near the quantile)
+        #
+        # We want the smallest k such that CDF(k) >= alpha.
+        # If the CI straddles alpha, treat as "below" and move right.
+        # This prevents noisy underestimates near alpha from pushing VaR too low.
+        # ------------------------------------------------------------------
+        if ae.ci is not None:
+            ci_lo, ci_hi = float(ae.ci[0]), float(ae.ci[1])
+
+            if ci_lo >= float(alpha):
+                # Confidently above alpha -> move left (try smaller k)
+                hi = mid
+            elif ci_hi < float(alpha):
+                # Confidently below alpha -> move right
+                lo = mid + 1
+            else:
+                # Ambiguous -> fall back to point estimate direction (prevents systematic overshoot)
+                if cdf_est >= float(alpha):
+                    hi = mid
+                else:
+                    lo = mid + 1
         else:
-            lo = mid + 1
+            # No CI available -> fallback to point estimate
+            if cdf_est >= float(alpha):
+                hi = mid
+            else:
+                lo = mid + 1
+
         iters += 1
 
     k_star = max(0, min(hi, n - 1))
@@ -205,10 +231,7 @@ def estimate_tvar(
 
     # Remaining budget after (optional) VaR.
     total = int(cfg.budget.total_shots)
-    # If a VaRResult is provided, assume it came from the same overall budget and
-    # subtract its actual usage so TVaR respects the shots-first intent.
     remain = max(1, total - int(vr.shots_used))
-    # Split remaining shots between tail prob and tail component.
     shots_each = max(1, remain // 2)
 
     b = cfg.budget
@@ -294,19 +317,15 @@ def estimate_risk_measures(
     dist = _discretize(data, cfg)
     bh = backend or get_backend(cfg.backend)
 
-    # Split the *single* total budget across mean and each alpha, so the function
-    # respects a shots-first "whole request" budget.
     total = int(cfg.budget.total_shots)
     alpha_list = alphas or [0.95, 0.99]
     n_alpha = max(1, len(alpha_list))
 
-    # Heuristic split: mean gets 20% (min 1k), the rest split evenly across alphas.
     mean_shots = max(1_000, int(0.2 * total))
     mean_shots = min(mean_shots, max(1, total - n_alpha))
     remaining = max(1, total - mean_shots)
     shots_per_alpha = max(1, remaining // n_alpha)
 
-    # Run mean under its allocated budget.
     b0 = cfg.budget
     mean_cfg = RiskQAEConfig(
         discretization=cfg.discretization,
@@ -345,7 +364,6 @@ def estimate_risk_measures(
     var_res: dict[float, VaRResult] = {}
     tvar_res: dict[float, TVaRResult] = {}
 
-    # Run each alpha under its own allocated budget.
     for a in alpha_list:
         alpha_cfg = RiskQAEConfig(
             discretization=cfg.discretization,
@@ -364,7 +382,6 @@ def estimate_risk_measures(
             diagnostics=cfg.diagnostics,
         )
 
-        # Use the already-discretized distribution to avoid re-binning.
         vr = _estimate_var_from_dist(dist, float(a), alpha_cfg, bh)
         tr = _estimate_tvar_from_dist(dist, float(a), alpha_cfg, bh, vr)
         var_res[float(a)] = vr
@@ -400,8 +417,6 @@ def estimate_risk_measures(
 def _estimate_var_from_dist(
     dist, alpha: float, cfg: RiskQAEConfig, bh: BackendHandle
 ) -> VaRResult:
-    """Internal helper: VaR from an already-discretized distribution."""
-    # Reuse estimate_var's logic but avoid a second discretization pass.
     data: LossData = {"pmf": dist.pmf.tolist(), "bin_values": dist.bin_values.tolist()}
     return estimate_var(data, alpha, config=cfg, backend=bh)
 
@@ -409,7 +424,6 @@ def _estimate_var_from_dist(
 def _estimate_tvar_from_dist(
     dist, alpha: float, cfg: RiskQAEConfig, bh: BackendHandle, vr: VaRResult
 ) -> TVaRResult:
-    """Internal helper: TVaR from an already-discretized distribution."""
     data: LossData = {"pmf": dist.pmf.tolist(), "bin_values": dist.bin_values.tolist()}
     return estimate_tvar(data, alpha, config=cfg, backend=bh, var_result=vr)
 
@@ -420,7 +434,6 @@ def _discretize(data: LossData, cfg: RiskQAEConfig):
 
 
 def _freeze_config(cfg: RiskQAEConfig) -> dict[str, Any]:
-    """Convert nested dataclasses into plain dicts."""
     return {
         "discretization": cfg.discretization.__dict__,
         "bounds": cfg.bounds.__dict__,

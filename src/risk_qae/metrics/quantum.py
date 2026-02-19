@@ -46,8 +46,16 @@ class TVaRResult:
     var_used: float
     tail_prob: float
     tail_mean_numerator: float
+
+    tail_prob_shots_used: int
+    tail_prob_circuits_run: int
+    tail_component_shots_used: int
+    tail_component_circuits_run: int
+
+    # Existing totals (includes VaR + both TVaR components)
     shots_used: int
     circuits_run: int
+
     diagnostics: dict[str, Any]
 
 
@@ -244,6 +252,7 @@ def estimate_tvar(
     )
     runner = _get_ae_runner(cfg)
 
+    # --- tail probability ---
     tail_prob_spec = build_tail_prob_problem(dist, k)
     tail_prob_ae = runner.run(
         tail_prob_spec,
@@ -254,6 +263,11 @@ def estimate_tvar(
     )
     tail_prob = float(tail_prob_ae.estimate)
 
+    # per-component usage
+    tail_prob_shots_used = int(tail_prob_ae.shots_used)
+    tail_prob_circuits_run = int(tail_prob_ae.circuits_run)
+
+    # --- tail scaled component ---
     tail_comp_spec = build_tail_scaled_component_problem(
         dist, k, value_encoding=cfg.value_encoding
     )
@@ -266,6 +280,11 @@ def estimate_tvar(
     )
     tail_scaled_component = float(tail_comp_ae.estimate)
 
+    # per-component usage
+    tail_component_shots_used = int(tail_comp_ae.shots_used)
+    tail_component_circuits_run = int(tail_comp_ae.circuits_run)
+
+    # --- reconstruct tail numerator in loss units ---
     x_min, x_max = dist.bounds
     denom = float(x_max - x_min)
     tail_mean_numerator = float(x_min) * tail_prob + denom * tail_scaled_component
@@ -275,13 +294,10 @@ def estimate_tvar(
     else:
         tvar = tail_mean_numerator / tail_prob
 
-    shots_used = (
-        int(vr.shots_used) + int(tail_prob_ae.shots_used) + int(tail_comp_ae.shots_used)
-    )
+    # Totals include VaR + both TVaR components
+    shots_used = int(vr.shots_used) + tail_prob_shots_used + tail_component_shots_used
     circuits_run = (
-        int(vr.circuits_run)
-        + int(tail_prob_ae.circuits_run)
-        + int(tail_comp_ae.circuits_run)
+        int(vr.circuits_run) + tail_prob_circuits_run + tail_component_circuits_run
     )
 
     return TVaRResult(
@@ -290,6 +306,12 @@ def estimate_tvar(
         var_used=float(vr.var),
         tail_prob=float(tail_prob),
         tail_mean_numerator=float(tail_mean_numerator),
+        # per-component usage
+        tail_prob_shots_used=tail_prob_shots_used,
+        tail_prob_circuits_run=tail_prob_circuits_run,
+        tail_component_shots_used=tail_component_shots_used,
+        tail_component_circuits_run=tail_component_circuits_run,
+        # Existing totals
         shots_used=shots_used,
         circuits_run=circuits_run,
         diagnostics={
